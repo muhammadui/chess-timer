@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useWebHaptics } from "web-haptics/react";
 import PlayerTile from "@/components/PlayerTile";
 import CenterBar from "@/components/CenterBar";
 import SettingsSheet from "@/components/SettingsSheet";
@@ -7,7 +8,6 @@ import { useChessClock, type Player } from "@/hooks/useChessClock";
 import { useWakeLock } from "@/hooks/useWakeLock";
 import { useFullscreen } from "@/hooks/useFullscreen";
 import { primeAudio, sound } from "@/lib/sound";
-import { haptics } from "@/lib/haptics";
 
 const LOW_TIME_MS = 10_000;
 
@@ -19,6 +19,21 @@ export default function ChessTimer() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [overlayDismissed, setOverlayDismissed] = useState(false);
   const { isFullscreen, toggle: toggleFullscreen } = useFullscreen();
+  const { trigger: hapticTrigger } = useWebHaptics();
+
+  // Keep the trigger fn fresh inside effects without forcing them to re-run
+  const triggerRef = useRef(hapticTrigger);
+  useEffect(() => {
+    triggerRef.current = hapticTrigger;
+  }, [hapticTrigger]);
+
+  const fireHaptic = useCallback(
+    (...args: Parameters<typeof hapticTrigger>) => {
+      if (!state.config.hapticsOn) return;
+      triggerRef.current(...args);
+    },
+    [state.config.hapticsOn]
+  );
 
   const phase: Phase = state.winner
     ? "over"
@@ -42,12 +57,12 @@ export default function ChessTimer() {
     if (state.winner && winnerRef.current !== state.winner) {
       winnerRef.current = state.winner;
       if (state.config.soundOn) sound.flagFall();
-      if (state.config.hapticsOn) haptics.flagFall();
+      if (state.config.hapticsOn) triggerRef.current("error");
     }
     if (!state.winner) winnerRef.current = null;
   }, [state.winner, state.config.soundOn, state.config.hapticsOn]);
 
-  // Low-time tick beeps — fire on each whole-second crossing under 10s for the active player
+  // Low-time tick beeps — fire on each whole-second crossing under 10s
   const lastTickSecondRef = useRef<number | null>(null);
   useEffect(() => {
     if (state.active == null || state.winner) {
@@ -63,7 +78,7 @@ export default function ChessTimer() {
     if (lastTickSecondRef.current !== sec && sec > 0) {
       lastTickSecondRef.current = sec;
       if (state.config.soundOn) sound.lowTick();
-      if (state.config.hapticsOn) haptics.lowTick();
+      if (state.config.hapticsOn) triggerRef.current(25);
     }
   }, [
     display,
@@ -77,28 +92,30 @@ export default function ChessTimer() {
     (player: Player) => {
       primeAudio();
       if (state.winner) return;
-      // Defensive: only fire effects when the tap will actually change state
+      // Only fire effects when the tap will actually change clock state:
+      // either the very first move, or the active player ending their turn.
       const willAct =
         !state.started || (!state.paused && state.active === player);
       if (willAct) {
         if (state.config.soundOn) sound.tap();
-        if (state.config.hapticsOn) haptics.tap();
+        fireHaptic("success");
       }
       tap(player);
     },
     [
       tap,
+      fireHaptic,
       state.winner,
       state.started,
       state.paused,
       state.active,
       state.config.soundOn,
-      state.config.hapticsOn,
     ]
   );
 
   const handlePrimary = useCallback(() => {
     primeAudio();
+    fireHaptic("nudge");
     if (phase === "running") {
       pause();
     } else if (phase === "paused") {
@@ -108,7 +125,7 @@ export default function ChessTimer() {
     } else {
       start();
     }
-  }, [phase, pause, resume, reset, start]);
+  }, [phase, pause, resume, reset, start, fireHaptic]);
 
   const handleResetFromBar = useCallback(() => {
     if (!state.started || phase === "over") {

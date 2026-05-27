@@ -1,5 +1,7 @@
 import { useMemo } from "react";
+import Confetti from "react-confetti";
 import { Trophy } from "lucide-react";
+import { useWindowSize } from "@/hooks/useWindowSize";
 
 type Props = {
   winnerName: string;
@@ -25,19 +27,32 @@ export default function GameOverOverlay({
     () => messages[Math.floor(Math.random() * messages.length)],
     []
   );
+  const { width, height } = useWindowSize();
 
   return (
-    <div className="fixed inset-0 z-40 flex items-center justify-center p-6 bg-black/70 backdrop-blur-sm">
-      <div className="w-full max-w-sm rounded-3xl bg-slate-900 border border-white/10 shadow-2xl shadow-black/50 p-6 text-center">
+    <div className="fixed inset-0 z-40 flex items-center justify-center p-6">
+      <div className="absolute inset-0 bg-black/55 backdrop-blur-sm" aria-hidden />
+
+      <div className="absolute inset-0 pointer-events-none overflow-hidden">
+        <Confetti
+          width={width}
+          height={height}
+          numberOfPieces={260}
+          recycle={false}
+          gravity={0.22}
+          tweenDuration={6000}
+          initialVelocityY={{ min: -10, max: 12 }}
+        />
+      </div>
+
+      <div className="relative w-full max-w-sm rounded-3xl bg-slate-900 border border-white/10 shadow-2xl shadow-black/50 p-6 text-center">
         <div className="mx-auto mb-4 h-14 w-14 rounded-2xl bg-emerald-600/20 text-emerald-400 flex items-center justify-center">
           <Trophy className="h-7 w-7" />
         </div>
         <p className="text-xs font-semibold tracking-[0.25em] uppercase text-slate-400">
           {message}
         </p>
-        <h2 className="mt-2 text-3xl font-bold text-white">
-          {winnerName} wins
-        </h2>
+        <h2 className="mt-2 text-3xl font-bold text-white">{winnerName} wins</h2>
         <p className="mt-1 text-sm text-slate-400">
           {loserName} ran out of time
         </p>

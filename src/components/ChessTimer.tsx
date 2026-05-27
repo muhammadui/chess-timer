@@ -1,329 +1,211 @@
-import { useState, useEffect, useCallback } from "react";
-import { Play, Pause, RotateCcw } from "lucide-react";
-import Confetti from "react-confetti";
-import PlayerTimer from "@/components/PlayerTimer";
-import TimeSelector from "@/components/TimeSelector";
-import FullscreenToggle from "@/components/FullscreenToggle";
-import { Button } from "@/components/ui/button";
+import { useCallback, useEffect, useRef, useState } from "react";
+import PlayerTile from "@/components/PlayerTile";
+import CenterBar from "@/components/CenterBar";
+import SettingsSheet from "@/components/SettingsSheet";
+import GameOverOverlay from "@/components/GameOverOverlay";
+import { useChessClock, type Player } from "@/hooks/useChessClock";
+import { useWakeLock } from "@/hooks/useWakeLock";
+import { useFullscreen } from "@/hooks/useFullscreen";
+import { primeAudio, sound } from "@/lib/sound";
+import { haptics } from "@/lib/haptics";
 
-const ChessTimer = () => {
-  const [selectedGameTime, setSelectedGameTime] = useState(600); // 10 minutes default
-  const [player1Time, setPlayer1Time] = useState(600);
-  const [player2Time, setPlayer2Time] = useState(600);
-  const [activePlayer, setActivePlayer] = useState<1 | 2 | null>(null);
-  const [gameOver, setGameOver] = useState(false);
-  const [winner, setWinner] = useState<1 | 2 | null>(null);
-  const [isFullscreen, setIsFullscreen] = useState(false);
-  const [showConfetti, setShowConfetti] = useState(false);
-  const [windowDimensions, setWindowDimensions] = useState({
-    width: window.innerWidth,
-    height: window.innerHeight,
-  });
+const LOW_TIME_MS = 10_000;
 
-  // Update window dimensions for confetti
+type Phase = "idle" | "running" | "paused" | "over";
+
+export default function ChessTimer() {
+  const { state, display, tap, start, pause, resume, reset, setConfig } =
+    useChessClock();
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [overlayDismissed, setOverlayDismissed] = useState(false);
+  const { isFullscreen, toggle: toggleFullscreen } = useFullscreen();
+
+  const phase: Phase = state.winner
+    ? "over"
+    : state.active != null
+      ? "running"
+      : state.paused
+        ? "paused"
+        : "idle";
+
+  // Keep screen on while a player is on the move
+  useWakeLock(phase === "running");
+
+  // Reset dismissal flag whenever a fresh game-over event arrives
   useEffect(() => {
-    const handleResize = () => {
-      setWindowDimensions({
-        width: window.innerWidth,
-        height: window.innerHeight,
-      });
-    };
+    if (!state.winner) setOverlayDismissed(false);
+  }, [state.winner]);
 
-    window.addEventListener("resize", handleResize);
-    return () => window.removeEventListener("resize", handleResize);
-  }, []);
-
-  // Timer effect
+  // Sound + haptic on game-over
+  const winnerRef = useRef<Player | null>(null);
   useEffect(() => {
-    if (gameOver || activePlayer === null) return;
-
-    const interval = setInterval(() => {
-      if (activePlayer === 1) {
-        setPlayer1Time((prev) => {
-          if (prev <= 1) {
-            setGameOver(true);
-            setWinner(2);
-            setShowConfetti(true);
-            return 0;
-          }
-          return prev - 1;
-        });
-      } else {
-        setPlayer2Time((prev) => {
-          if (prev <= 1) {
-            setGameOver(true);
-            setWinner(1);
-            setShowConfetti(true);
-            return 0;
-          }
-          return prev - 1;
-        });
-      }
-    }, 1000);
-
-    return () => clearInterval(interval);
-  }, [activePlayer, gameOver]);
-
-  // Hide confetti after 5 seconds
-  useEffect(() => {
-    if (showConfetti) {
-      const timer = setTimeout(() => {
-        setShowConfetti(false);
-      }, 5000);
-      return () => clearTimeout(timer);
+    if (state.winner && winnerRef.current !== state.winner) {
+      winnerRef.current = state.winner;
+      if (state.config.soundOn) sound.flagFall();
+      if (state.config.hapticsOn) haptics.flagFall();
     }
-  }, [showConfetti]);
+    if (!state.winner) winnerRef.current = null;
+  }, [state.winner, state.config.soundOn, state.config.hapticsOn]);
 
-  const handlePlayerClick = useCallback(
-    (player: 1 | 2) => {
-      if (gameOver) return;
+  // Low-time tick beeps — fire on each whole-second crossing under 10s for the active player
+  const lastTickSecondRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (state.active == null || state.winner) {
+      lastTickSecondRef.current = null;
+      return;
+    }
+    const ms = display[state.active];
+    if (ms > LOW_TIME_MS) {
+      lastTickSecondRef.current = null;
+      return;
+    }
+    const sec = Math.ceil(ms / 1000);
+    if (lastTickSecondRef.current !== sec && sec > 0) {
+      lastTickSecondRef.current = sec;
+      if (state.config.soundOn) sound.lowTick();
+      if (state.config.hapticsOn) haptics.lowTick();
+    }
+  }, [
+    display,
+    state.active,
+    state.winner,
+    state.config.soundOn,
+    state.config.hapticsOn,
+  ]);
 
-      if (activePlayer === null) {
-        // First move
-        setActivePlayer(player === 1 ? 2 : 1);
-      } else if (activePlayer === player) {
-        // Switch to other player
-        setActivePlayer(player === 1 ? 2 : 1);
+  const handleTap = useCallback(
+    (player: Player) => {
+      primeAudio();
+      if (state.winner) return;
+      // Defensive: only fire effects when the tap will actually change state
+      const willAct =
+        !state.started || (!state.paused && state.active === player);
+      if (willAct) {
+        if (state.config.soundOn) sound.tap();
+        if (state.config.hapticsOn) haptics.tap();
       }
+      tap(player);
     },
-    [activePlayer, gameOver]
+    [
+      tap,
+      state.winner,
+      state.started,
+      state.paused,
+      state.active,
+      state.config.soundOn,
+      state.config.hapticsOn,
+    ]
   );
 
-  const startGame = () => {
-    setActivePlayer(1);
+  const handlePrimary = useCallback(() => {
+    primeAudio();
+    if (phase === "running") {
+      pause();
+    } else if (phase === "paused") {
+      resume();
+    } else if (phase === "over") {
+      reset();
+    } else {
+      start();
+    }
+  }, [phase, pause, resume, reset, start]);
+
+  const handleResetFromBar = useCallback(() => {
+    if (!state.started || phase === "over") {
+      reset();
+      return;
+    }
+    // Funnel mid-game resets through the settings sheet's confirmation
+    setSettingsOpen(true);
+  }, [reset, state.started, phase]);
+
+  const lowTime = (p: Player) => state.active === p && display[p] < LOW_TIME_MS;
+
+  const tileState = useCallback(
+    (p: Player): React.ComponentProps<typeof PlayerTile>["state"] => {
+      if (state.winner) return state.winner === p ? "winner" : "loser";
+      if (state.paused) return "paused";
+      if (state.active === p) return "active";
+      if (state.active != null) return "waiting";
+      return state.started ? "ready" : "idle";
+    },
+    [state.winner, state.paused, state.active, state.started]
+  );
+
+  const tileHint = (p: Player): string | undefined => {
+    if (state.winner || state.active != null) return undefined;
+    if (!state.started) return "Tap to start opponent";
+    if (state.paused && state.pausedActive === p) return "Paused — tap Resume";
+    return undefined;
   };
 
-  const pauseGame = () => {
-    setActivePlayer(null);
-  };
-
-  const resetGame = () => {
-    setPlayer1Time(selectedGameTime);
-    setPlayer2Time(selectedGameTime);
-    setActivePlayer(null);
-    setGameOver(false);
-    setWinner(null);
-    setShowConfetti(false);
-  };
-
-  const handleTimeChange = (newTime: number) => {
-    setSelectedGameTime(newTime);
-    setPlayer1Time(newTime);
-    setPlayer2Time(newTime);
-  };
-
-  const toggleFullscreen = () => {
-    setIsFullscreen(!isFullscreen);
-  };
-
-  const formatTime = (seconds: number) => {
-    const mins = Math.floor(seconds / 60);
-    const secs = seconds % 60;
-    return `${mins}:${secs.toString().padStart(2, "0")}`;
-  };
-
-  const congratulatoryMessages = [
-    "Outstanding victory!",
-    "Brilliant chess mastery!",
-    "Checkmate champion!",
-    "Strategic genius wins!",
-    "Chess master supreme!",
-  ];
-
-  const randomMessage =
-    congratulatoryMessages[
-      Math.floor(Math.random() * congratulatoryMessages.length)
-    ];
-
-  if (isFullscreen) {
-    return (
-      <div className="fixed inset-0 bg-gradient-to-br from-slate-900 to-slate-800 z-50">
-        {showConfetti && (
-          <Confetti
-            width={windowDimensions.width}
-            height={windowDimensions.height}
-            recycle={false}
-            numberOfPieces={300}
-            gravity={0.3}
-          />
-        )}
-
-        {/* Game Over Modal in Fullscreen */}
-        {gameOver && (
-          <div className="absolute inset-0 bg-black bg-opacity-50 flex items-center justify-center z-60">
-            <div className="bg-white rounded-lg p-8 text-center max-w-md mx-4">
-              <h2 className="text-4xl font-bold mb-4 text-green-600">
-                🎉 {randomMessage}
-              </h2>
-              <p className="text-2xl mb-6 text-gray-800">
-                Player {winner} Wins!
-              </p>
-              <div className="flex gap-4 justify-center">
-                <Button
-                  onClick={resetGame}
-                  className="bg-blue-600 hover:bg-blue-700 text-lg px-6 py-3"
-                >
-                  Play Again
-                </Button>
-                <Button
-                  onClick={() => {
-                    setIsFullscreen(false);
-                    resetGame();
-                  }}
-                  variant="outline"
-                  className="text-lg px-6 py-3"
-                >
-                  Exit Fullscreen
-                </Button>
-              </div>
-            </div>
-          </div>
-        )}
-
-        <div className="h-full grid grid-rows-2">
-          {/* Player 2 - Top half (rotated) */}
-          <div className="transform rotate-180">
-            <PlayerTimer
-              playerNumber={2}
-              time={formatTime(player2Time)}
-              isActive={activePlayer === 2}
-              onClick={() => handlePlayerClick(2)}
-              disabled={gameOver}
-              isFullscreen={true}
-            />
-          </div>
-
-          {/* Player 1 - Bottom half */}
-          <div>
-            <PlayerTimer
-              playerNumber={1}
-              time={formatTime(player1Time)}
-              isActive={activePlayer === 1}
-              onClick={() => handlePlayerClick(1)}
-              disabled={gameOver}
-              isFullscreen={true}
-            />
-          </div>
-        </div>
-
-        {/* Exit fullscreen button */}
-        <button
-          onClick={toggleFullscreen}
-          className="absolute top-4 right-4 bg-black bg-opacity-50 text-white p-2 rounded-full hover:bg-opacity-70 transition-all z-50"
-        >
-          ✕
-        </button>
-      </div>
-    );
-  }
+  const showOverlay = phase === "over" && !overlayDismissed;
+  const names = { 1: state.config.p1Name, 2: state.config.p2Name } as const;
 
   return (
-    <div className="w-full max-w-4xl mx-auto">
-      {showConfetti && (
-        <Confetti
-          width={windowDimensions.width}
-          height={windowDimensions.height}
-          recycle={false}
-          numberOfPieces={200}
-          gravity={0.2}
+    <div
+      className="fixed inset-0 flex flex-col bg-slate-950 overscroll-none"
+      style={{
+        paddingTop: "env(safe-area-inset-top)",
+        paddingBottom: "env(safe-area-inset-bottom)",
+        paddingLeft: "env(safe-area-inset-left)",
+        paddingRight: "env(safe-area-inset-right)",
+      }}
+    >
+      <div className="flex-1 min-h-0">
+        <PlayerTile
+          name={names[2]}
+          ms={display[2]}
+          state={tileState(2)}
+          lowTime={lowTime(2)}
+          onTap={() => handleTap(2)}
+          rotated
+          hint={tileHint(2)}
+          moves={state.moves[2]}
+        />
+      </div>
+
+      <CenterBar
+        phase={phase}
+        isFullscreen={isFullscreen}
+        onPrimary={handlePrimary}
+        onSettings={() => setSettingsOpen(true)}
+        onReset={handleResetFromBar}
+        onToggleFullscreen={toggleFullscreen}
+      />
+
+      <div className="flex-1 min-h-0">
+        <PlayerTile
+          name={names[1]}
+          ms={display[1]}
+          state={tileState(1)}
+          lowTime={lowTime(1)}
+          onTap={() => handleTap(1)}
+          hint={tileHint(1)}
+          moves={state.moves[1]}
+        />
+      </div>
+
+      <SettingsSheet
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        config={state.config}
+        onChange={setConfig}
+        onReset={reset}
+        gameStarted={state.started && !state.winner}
+      />
+
+      {showOverlay && (
+        <GameOverOverlay
+          winnerName={names[state.winner as Player]}
+          loserName={names[(state.winner === 1 ? 2 : 1) as Player]}
+          onPlayAgain={() => {
+            reset();
+            setOverlayDismissed(true);
+          }}
+          onDismiss={() => setOverlayDismissed(true)}
         />
       )}
-
-      {/* Game Over Modal */}
-      {gameOver && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg p-8 text-center max-w-md mx-4">
-            <h2 className="text-3xl font-bold mb-4 text-green-600">
-              🎉 {randomMessage}
-            </h2>
-            <p className="text-xl mb-6 text-gray-800">Player {winner} Wins!</p>
-            <Button
-              onClick={resetGame}
-              className="bg-blue-600 hover:bg-blue-700"
-            >
-              Play Again
-            </Button>
-          </div>
-        </div>
-      )}
-
-      {/* Controls */}
-      <div className="flex justify-between items-center mb-8">
-        <TimeSelector
-          selectedTime={selectedGameTime}
-          onTimeChange={handleTimeChange}
-          disabled={activePlayer !== null || gameOver}
-        />
-        <FullscreenToggle
-          isFullscreen={isFullscreen}
-          onToggle={toggleFullscreen}
-        />
-      </div>
-
-      {/* Timer Display */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-8">
-        <PlayerTimer
-          playerNumber={1}
-          time={formatTime(player1Time)}
-          isActive={activePlayer === 1}
-          onClick={() => handlePlayerClick(1)}
-          disabled={gameOver}
-          isFullscreen={false}
-        />
-        <PlayerTimer
-          playerNumber={2}
-          time={formatTime(player2Time)}
-          isActive={activePlayer === 2}
-          onClick={() => handlePlayerClick(2)}
-          disabled={gameOver}
-          isFullscreen={false}
-        />
-      </div>
-
-      {/* Control Buttons */}
-      <div className="flex justify-center gap-4">
-        {activePlayer === null && !gameOver && (
-          <Button
-            onClick={startGame}
-            className="bg-green-600 hover:bg-green-700 text-white px-6 py-3"
-          >
-            <Play className="mr-2 h-5 w-5" />
-            Start Game
-          </Button>
-        )}
-
-        {activePlayer !== null && !gameOver && (
-          <Button
-            onClick={pauseGame}
-            className="bg-yellow-600 hover:bg-yellow-700 text-white px-6 py-3"
-          >
-            <Pause className="mr-2 h-5 w-5" />
-            Pause
-          </Button>
-        )}
-
-        <Button
-          onClick={resetGame}
-          className="bg-red-600 hover:bg-red-700 text-white px-6 py-3"
-        >
-          <RotateCcw className="mr-2 h-5 w-5" />
-          Reset
-        </Button>
-      </div>
-
-      {/* Instructions */}
-      <div className="mt-8 text-center text-slate-300">
-        <p className="mb-2">
-          {activePlayer === null
-            ? "Select your game time and click 'Start Game' to begin"
-            : `Player ${activePlayer}'s turn - Click your timer when you make your move`}
-        </p>
-        <p className="text-sm">
-          Each player starts with {Math.floor(selectedGameTime / 60)} minutes
-        </p>
-      </div>
     </div>
   );
-};
-
-export default ChessTimer;
+}

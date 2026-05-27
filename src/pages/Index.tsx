@@ -1,5 +1,5 @@
 import { Helmet } from "react-helmet-async";
-import DeviceClock from "@/components/device/DeviceClock";
+import ChessTimer from "@/components/ChessTimer";
 
 const Index = () => (
   <>
@@ -15,7 +15,7 @@ const Index = () => (
         content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no"
       />
     </Helmet>
-    <DeviceClock />
+    <ChessTimer />
   </>
 );
 

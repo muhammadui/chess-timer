@@ -27,7 +27,7 @@ A fast, modern, offline-capable chess timer for physical games. Built with React
 ### Local Setup
 
 ```bash
-git clone https://github.com/your-username/chess-timer.git
+git clone https://github.com/muhammadui/chess-timer.git
 cd chess-timer
 
 # install dependencies

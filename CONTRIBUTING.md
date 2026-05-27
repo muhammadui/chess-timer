@@ -16,7 +16,7 @@ Thank you for helping improve Chess Timer! This guide will walk you through setu
 
 ```bash
 # Fork and clone your repo
-git clone https://github.com/your-username/chess-timer.git
+git clone https://github.com/muhammadui/chess-timer.git
 cd chess-timer
 
 # Add upstream for syncing
